@@ -1,0 +1,79 @@
+name: 'Gradle Lighthouse'
+description: 'Run Gradle Lighthouse audit and post results as PR comments + SARIF upload'
+branding:
+  icon: 'zap'
+  color: 'orange'
+inputs:
+  gradle-args:
+    description: 'Additional Gradle arguments'
+    required: false
+    default: ''
+  fail-on-severity:
+    description: 'Fail the action if issues at this severity or above exist (NONE, INFO, WARNING, ERROR, FATAL)'
+    required: false
+    default: 'NONE'
+  upload-sarif:
+    description: 'Upload SARIF results to GitHub Security tab'
+    required: false
+    default: 'true'
+  comment-on-pr:
+    description: 'Post score summary as PR comment'
+    required: false
+    default: 'true'
+runs:
+  using: 'composite'
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Run Lighthouse Audit
+      shell: bash
+      env:
+        TERM: xterm-256color
+        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        GRADLE_ARGS: ${{ inputs.gradle-args }}
+      run: |
+        ./gradlew lighthouseAudit lighthouseAggregate \
+          "-Plighthouse.failOnSeverity=$FAIL_ON_SEVERITY" \
+          ${GRADLE_ARGS:+"$GRADLE_ARGS"} \
+          --no-daemon --stacktrace
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true' && always()
+      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+      with:
+        sarif_file: build/reports/lighthouse/
+        category: gradle-lighthouse
+    - name: Find SARIF reports
+      if: always()
+      shell: bash
+      id: reports
+      run: |
+        REPORT_FILES=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
+        safe_report_files=$(printf '%s' "$REPORT_FILES" | tr -d '\n\r')
+        echo "sarif_files=$safe_report_files" >> "$GITHUB_OUTPUT"
+
+        # Extract score from root module report
+        SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
+        safe_score=$(printf '%s' "$SCORE" | tr -d '\n\r')
+        echo "score=$safe_score" >> "$GITHUB_OUTPUT"
+    - name: PR Comment
+      if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      env:
+        LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
+      with:
+        script: "const score = process.env.LIGHTHOUSE_SCORE;\nconst body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n| Metric | Value |\n|--------|-------|\n| **Health Score** | ${score}/100 |\n| **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n> Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n> SARIF results uploaded to the Security tab.`;\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"

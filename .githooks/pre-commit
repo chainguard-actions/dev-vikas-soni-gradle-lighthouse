@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Pre-commit hook to ensure code compiles before allowing a commit
+
+echo "Running Pre-Commit Checks..."
+
+# Run basic check task
+./gradlew check --no-daemon
+
+if [ $? -ne 0 ]; then
+    echo "❌ Build failed! Please fix the compilation or test issues before committing."
+    exit 1
+fi
+
+echo "✅ Pre-Commit Checks Passed!"
+exit 0
