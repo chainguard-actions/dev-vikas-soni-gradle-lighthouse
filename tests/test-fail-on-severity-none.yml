@@ -1,0 +1,62 @@
+name: Test fail-on-severity NONE
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up mock gradlew
+        run: |
+          cp "$GITHUB_WORKSPACE/tests/fixtures/mock-gradlew.sh" "$GITHUB_WORKSPACE/gradlew"
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+
+      - id: action
+        uses: .
+        with:
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+          fail-on-severity: 'NONE'
+
+      - name: Assert action succeeded with NONE severity
+        run: |
+          echo "PASS: action completed without failure when fail-on-severity=NONE"
+
+      - name: Assert failOnSeverity=NONE was passed to gradlew
+        run: |
+          if [ -f /tmp/gradle-args-captured.txt ]; then
+            CAPTURED=$(cat /tmp/gradle-args-captured.txt)
+            echo "Captured args: $CAPTURED"
+            if echo "$CAPTURED" | grep -q "failOnSeverity=NONE"; then
+              echo "PASS: failOnSeverity=NONE correctly passed to gradlew"
+            else
+              echo "FAIL: failOnSeverity=NONE not found in args: $CAPTURED"
+              exit 1
+            fi
+          else
+            echo "FAIL: args capture file not found at /tmp/gradle-args-captured.txt"
+            exit 1
+          fi
+
+      - name: Assert standard Gradle tasks were invoked
+        run: |
+          if [ -f /tmp/gradle-args-captured.txt ]; then
+            CAPTURED=$(cat /tmp/gradle-args-captured.txt)
+            echo "Captured args: $CAPTURED"
+            if echo "$CAPTURED" | grep -q "lighthouseAudit"; then
+              echo "PASS: lighthouseAudit task was included"
+            else
+              echo "FAIL: lighthouseAudit task not found in args"
+              exit 1
+            fi
+            if echo "$CAPTURED" | grep -q "lighthouseAggregate"; then
+              echo "PASS: lighthouseAggregate task was included"
+            else
+              echo "FAIL: lighthouseAggregate task not found in args"
+              exit 1
+            fi
+          else
+            echo "FAIL: args capture file not found"
+            exit 1
+          fi

@@ -47,13 +47,25 @@ runs:
         FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
         GRADLE_ARGS: ${{ inputs.gradle-args }}
       run: |
+        # Validate FAIL_ON_SEVERITY against the allowed set to prevent injection
+        case "$FAIL_ON_SEVERITY" in
+          NONE|INFO|WARNING|ERROR|FATAL) ;;
+          *) echo "Invalid fail-on-severity value: '$FAIL_ON_SEVERITY'. Must be one of: NONE, INFO, WARNING, ERROR, FATAL" >&2; exit 1 ;;
+        esac
+
+        # Tokenize GRADLE_ARGS with xargs so quoted sub-commands are handled correctly
+        gradle_args_array=()
+        if [ -n "$GRADLE_ARGS" ]; then
+          while IFS= read -r -d '' t; do gradle_args_array+=("$t"); done \
+            < <(printf '%s' "$GRADLE_ARGS" | xargs printf '%s\0')
+        fi
         ./gradlew lighthouseAudit lighthouseAggregate \
           "-Plighthouse.failOnSeverity=$FAIL_ON_SEVERITY" \
-          ${GRADLE_ARGS:+"$GRADLE_ARGS"} \
+          "${gradle_args_array[@]}" \
           --no-daemon --stacktrace
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true' && always()
-      uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4
+      uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
       with:
         sarif_file: build/reports/lighthouse/
         category: gradle-lighthouse
@@ -63,6 +75,7 @@ runs:
       id: reports
       run: |
         REPORT_FILES=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
+        # Sanitize: strip newlines/carriage-returns before writing to GITHUB_OUTPUT
         safe_report_files=$(printf '%s' "$REPORT_FILES" | tr -d '\n\r')
         echo "sarif_files=$safe_report_files" >> "$GITHUB_OUTPUT"
 
@@ -76,4 +89,4 @@ runs:
       env:
         LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
-        script: "const score = process.env.LIGHTHOUSE_SCORE;\nconst body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n| Metric | Value |\n|--------|-------|\n| **Health Score** | ${score}/100 |\n| **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n> Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n> SARIF results uploaded to the Security tab.`;\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"
+        script: "const score = process.env.LIGHTHOUSE_SCORE || 'N/A';\nconst body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n| Metric | Value |\n|--------|-------|\n| **Health Score** | ${score}/100 |\n| **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n> Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n> SARIF results uploaded to the Security tab.`;\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"

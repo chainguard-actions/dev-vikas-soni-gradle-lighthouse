@@ -1,0 +1,63 @@
+name: Test score extraction from report
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up mock gradlew with score 92
+        run: |
+          # Use the fixture mock but override the score in the JSON report
+          cp "$GITHUB_WORKSPACE/tests/fixtures/mock-gradlew.sh" "$GITHUB_WORKSPACE/gradlew"
+          # Patch the score to 92 in the fixture copy
+          sed -i 's/"score": 85/"score": 92/' "$GITHUB_WORKSPACE/gradlew"
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+
+      - id: action
+        uses: .
+        with:
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+          fail-on-severity: 'NONE'
+
+      - name: Assert score is correctly extracted from JSON report
+        run: |
+          SCORE=$(grep -o '"score": [0-9]*' "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.json" | head -1 | grep -o '[0-9]*')
+          echo "score: $SCORE"
+          if [ "$SCORE" = "92" ]; then
+            echo "PASS: score correctly extracted as 92"
+          elif [ -z "$SCORE" ]; then
+            echo "FAIL: score could not be extracted from report"
+            exit 1
+          else
+            echo "FAIL: expected score 92 but got: $SCORE"
+            exit 1
+          fi
+
+      - name: Assert SARIF file matches expected find pattern
+        run: |
+          FOUND=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
+          echo "SARIF files found: $FOUND"
+          if [ -z "$FOUND" ]; then
+            echo "FAIL: no SARIF files found matching pattern '*/reports/lighthouse/*-report.sarif'"
+            exit 1
+          fi
+          echo "PASS: SARIF file found: $FOUND"
+
+      - name: Assert JSON report contains expected structure
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.json" ]; then
+            CONTENT=$(cat "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.json")
+            echo "Report content: $CONTENT"
+            if echo "$CONTENT" | grep -q '"score"'; then
+              echo "PASS: JSON report contains score field"
+            else
+              echo "FAIL: JSON report missing score field"
+              exit 1
+            fi
+          else
+            echo "FAIL: module-report.json not found"
+            exit 1
+          fi

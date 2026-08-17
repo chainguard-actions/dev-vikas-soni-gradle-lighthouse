@@ -1,0 +1,66 @@
+name: Test fail-on-severity input - gradle-lighthouse
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_EVENT_NAME: push
+      GITHUB_REF: refs/heads/main
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Set up a mock Gradle project that records the arguments it was called with
+      - name: Set up mock Gradle project
+        run: |
+          cat > "$GITHUB_WORKSPACE/gradlew" << 'EOF'
+          #!/usr/bin/env bash
+          echo "Mock Gradle called with args: $@"
+          # Record the arguments for later assertion
+          echo "$@" > /tmp/gradle-args.txt
+          # Create expected output directories and files
+          mkdir -p build/reports/lighthouse
+          cat > build/reports/lighthouse/module-report.json << 'JSONEOF'
+          {"score": 90, "issues": []}
+          JSONEOF
+          cat > build/reports/lighthouse/module-report.sarif << 'SARIFEOF'
+          {
+            "version": "2.1.0",
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "GradleLighthouse",
+                    "version": "1.0.0",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }
+            ]
+          }
+          SARIFEOF
+          exit 0
+          EOF
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+
+      - id: action
+        uses: .
+        with:
+          fail-on-severity: 'ERROR'
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+
+      - name: Assert fail-on-severity was passed to gradlew
+        run: |
+          echo "Checking gradle args..."
+          ARGS=$(cat /tmp/gradle-args.txt 2>/dev/null || echo "")
+          echo "Gradle args: $ARGS"
+          if echo "$ARGS" | grep -q "lighthouse.failOnSeverity=ERROR"; then
+            echo "PASS: fail-on-severity=ERROR was passed to gradlew"
+          else
+            echo "FAIL: expected '-Plighthouse.failOnSeverity=ERROR' in gradle args"
+            echo "Actual args: $ARGS"
+            exit 1
+          fi

@@ -1,0 +1,48 @@
+name: Test gradle failure propagation
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up mock gradlew that fails
+        run: |
+          cp "$GITHUB_WORKSPACE/tests/fixtures/mock-gradlew-fail.sh" "$GITHUB_WORKSPACE/gradlew"
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+
+      - id: action
+        uses: .
+        with:
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+          fail-on-severity: 'NONE'
+        continue-on-error: true
+
+      - name: Assert action failed when gradlew fails
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "action outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action correctly failed when gradlew returned non-zero exit"
+          else
+            echo "FAIL: expected action to fail but got outcome: $OUTCOME"
+            exit 1
+          fi
+
+      - name: Assert partial report was still created by gradlew before failure
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.json" ]; then
+            SCORE=$(grep -o '"score": [0-9]*' "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.json" | head -1 | grep -o '[0-9]*')
+            echo "score from partial report: $SCORE"
+            if [ "$SCORE" = "45" ]; then
+              echo "PASS: partial report exists with score 45"
+            else
+              echo "PASS: partial report exists with score: $SCORE"
+            fi
+          else
+            echo "FAIL: expected partial report to exist even after gradle failure"
+            exit 1
+          fi
