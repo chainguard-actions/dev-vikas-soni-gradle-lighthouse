@@ -9,6 +9,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
 | v2.1.1 | [`v2.1.1`](https://github.com/chainguard-actions/dev-vikas-soni-gradle-lighthouse/tree/v2.1.1) | [`7be76f9`](https://github.com/dev-vikas-soni/gradle-lighthouse/commit/7be76f9279efbe96abb16793404c4f1439c9eaff) |
+| v2.3.2 | [`v2.3.2`](https://github.com/chainguard-actions/dev-vikas-soni-gradle-lighthouse/tree/v2.3.2) | [`9bb766e`](https://github.com/dev-vikas-soni/gradle-lighthouse/commit/9bb766e2623b736ddda55cc7360720b699dc99b9) |
 
 ## Privacy
 
