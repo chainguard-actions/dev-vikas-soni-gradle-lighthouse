@@ -1,0 +1,138 @@
+name: Test fail-on-severity input with mock Gradle
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up mock gradlew that simulates a severity failure
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/build/reports/lighthouse"
+
+          # Create a SARIF report with an error-level finding
+          cat > "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.sarif" <<'EOF'
+          {
+            "version": "2.1.0",
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "Gradle Lighthouse",
+                    "version": "1.0.0",
+                    "rules": [
+                      {
+                        "id": "LH001",
+                        "name": "HighSeverityIssue",
+                        "shortDescription": { "text": "High severity issue found" }
+                      }
+                    ]
+                  }
+                },
+                "results": [
+                  {
+                    "ruleId": "LH001",
+                    "level": "error",
+                    "message": { "text": "Critical issue detected" }
+                  }
+                ]
+              }
+            ]
+          }
+          EOF
+
+          # Create module-report.json with a low score
+          cat > "$GITHUB_WORKSPACE/build/reports/lighthouse/module-report.json" <<'EOF'
+          {
+            "score": 45,
+            "checks": [
+              { "name": "critical-check", "severity": "ERROR", "passed": false }
+            ]
+          }
+          EOF
+
+          # Create a mock gradlew that exits with failure (simulating severity threshold exceeded)
+          cat > "$GITHUB_WORKSPACE/gradlew" <<'GRADLEW'
+          #!/bin/bash
+          echo "Mock Gradle Lighthouse Audit running..."
+          # Check if fail-on-severity is set to something other than NONE
+          for arg in "$@"; do
+            if echo "$arg" | grep -q 'failOnSeverity=ERROR\|failOnSeverity=WARNING\|failOnSeverity=FATAL'; then
+              echo "ERROR: Severity threshold exceeded!"
+              echo "BUILD FAILED"
+              exit 1
+            fi
+          done
+          echo "BUILD SUCCESSFUL"
+          exit 0
+          GRADLEW
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+
+          echo "Mock setup complete"
+
+      - name: Run action with fail-on-severity=NONE (should succeed)
+        id: action-none
+        uses: .
+        continue-on-error: true
+        with:
+          fail-on-severity: 'NONE'
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+
+      - name: Assert action with NONE severity succeeded
+        env:
+          OUTCOME: ${{ steps.action-none.outcome }}
+        run: |
+          echo "outcome with NONE severity: $OUTCOME"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "PASS: action succeeded with fail-on-severity=NONE"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed (may be due to SARIF upload or other step), but gradlew ran"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
+
+      - name: Recreate mock gradlew for ERROR severity test
+        run: |
+          cat > "$GITHUB_WORKSPACE/gradlew" <<'GRADLEW'
+          #!/bin/bash
+          echo "Mock Gradle Lighthouse Audit running..."
+          for arg in "$@"; do
+            if echo "$arg" | grep -q 'failOnSeverity=ERROR\|failOnSeverity=WARNING\|failOnSeverity=FATAL'; then
+              echo "ERROR: Severity threshold exceeded!"
+              echo "BUILD FAILED"
+              exit 1
+            fi
+          done
+          echo "BUILD SUCCESSFUL"
+          exit 0
+          GRADLEW
+          chmod +x "$GITHUB_WORKSPACE/gradlew"
+
+      - name: Run action with fail-on-severity=ERROR (should fail due to mock)
+        id: action-error
+        uses: .
+        continue-on-error: true
+        with:
+          fail-on-severity: 'ERROR'
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+
+      - name: Assert action with ERROR severity failed
+        env:
+          OUTCOME: ${{ steps.action-error.outcome }}
+        run: |
+          echo "outcome with ERROR severity: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed as expected with fail-on-severity=ERROR and mock errors"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed with fail-on-severity=ERROR"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

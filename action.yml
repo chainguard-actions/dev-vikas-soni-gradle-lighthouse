@@ -1,0 +1,125 @@
+name: 'Gradle Lighthouse'
+description: 'Run Gradle Lighthouse audit and post results as PR comments + SARIF upload'
+branding:
+  icon: 'zap'
+  color: 'orange'
+inputs:
+  gradle-args:
+    description: 'Additional Gradle arguments'
+    required: false
+    default: ''
+  fail-on-severity:
+    description: 'Fail the action if issues at this severity or above exist (NONE, INFO, WARNING, ERROR, FATAL)'
+    required: false
+    default: 'NONE'
+  upload-sarif:
+    description: 'Upload SARIF results to GitHub Security tab'
+    required: false
+    default: 'true'
+  comment-on-pr:
+    description: 'Post score summary as PR comment'
+    required: false
+    default: 'true'
+  base-report-path:
+    description: 'Path to base reports for delta calculation (optional)'
+    required: false
+    default: '.lighthouse/base-reports'
+runs:
+  using: 'composite'
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - name: Download Base Reports (Main Branch)
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      with:
+        script: |
+          try {
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: context.workflow,
+              branch: context.payload.pull_request.base.ref,
+              status: 'success',
+              per_page: 1
+            });
+            if (runs.workflow_runs.length > 0) {
+              const runId = runs.workflow_runs[0].id;
+              const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: runId
+              });
+              const match = artifacts.artifacts.find(a => a.name === 'lighthouse-reports');
+              if (match) {
+                const download = await github.rest.actions.downloadArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: match.id,
+                  archive_format: 'zip'
+                });
+                const fs = require('fs');
+                fs.writeFileSync('${{ github.workspace }}/base-reports.zip', Buffer.from(download.data));
+                const exec = require('@actions/exec');
+                await exec.exec('unzip', ['-o', '${{ github.workspace }}/base-reports.zip', '-d', '${{ inputs.base-report-path }}']);
+                console.log('Successfully downloaded base reports from run ' + runId);
+              }
+            }
+          } catch (e) {
+            console.log('Could not download base reports: ' + e.message);
+          }
+    - name: Run Lighthouse Audit
+      shell: bash
+      env:
+        TERM: xterm-256color
+        INPUT_FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        INPUT_BASE_REPORT_PATH: ${{ inputs.base-report-path }}
+        INPUT_GRADLE_ARGS: ${{ inputs.gradle-args }}
+      run: |
+        gradle_extra_args=()
+        if [ -n "$INPUT_GRADLE_ARGS" ]; then
+          while IFS= read -r -d '' t; do gradle_extra_args+=("$t"); done \
+            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs printf '%s\0')
+        fi
+        ./gradlew lighthouseAudit lighthouseAggregate \
+          "-Plighthouse.failOnSeverity=$INPUT_FAIL_ON_SEVERITY" \
+          "-Plighthouse.baseReportDir=$INPUT_BASE_REPORT_PATH" \
+          "${gradle_extra_args[@]}" \
+          --no-daemon --stacktrace
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true' && always()
+      uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+      with:
+        sarif_file: build/reports/lighthouse/
+        category: gradle-lighthouse
+    - name: Find SARIF reports
+      if: always()
+      shell: bash
+      id: reports
+      run: |
+        REPORT_FILES=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
+        echo "sarif_files=$REPORT_FILES" >> $GITHUB_OUTPUT
+
+        # Extract score from root module report
+        SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
+        echo "score=$SCORE" >> $GITHUB_OUTPUT
+    - name: PR Comment
+      if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      with:
+        script: "const fs = require('fs');\nconst summaryPath = 'build/reports/lighthouse/lighthouse-pr-summary.md';\nlet body = '';\n\nif (fs.existsSync(summaryPath)) {\n  body = fs.readFileSync(summaryPath, 'utf8');\n} else {\n  const score = '${{ steps.reports.outputs.score }}';\n  body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n  | Metric | Value |\n  |--------|-------|\n  | **Health Score** | ${score}/100 |\n  | **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n  > Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n  > SARIF results uploaded to the Security tab.`;\n}\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"

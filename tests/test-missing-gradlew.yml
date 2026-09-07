@@ -1,0 +1,38 @@
+name: Test missing gradlew error handling
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Remove gradlew to simulate missing Gradle wrapper
+        run: |
+          # Remove gradlew so the action fails at the Run Lighthouse Audit step
+          rm -f "$GITHUB_WORKSPACE/gradlew"
+          echo "gradlew removed"
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          fail-on-severity: 'NONE'
+          upload-sarif: 'false'
+          comment-on-pr: 'false'
+
+      - name: Assert action failed gracefully (no gradlew present)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed as expected when gradlew is missing"
+          elif [ "$OUTCOME" = "success" ]; then
+            echo "FAIL: action should have failed without gradlew"
+            exit 1
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

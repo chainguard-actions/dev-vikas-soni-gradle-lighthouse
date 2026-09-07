@@ -1,0 +1,226 @@
+package com.gradlelighthouse.core
+
+import com.gradlelighthouse.core.scoring.CategoryScore
+import com.gradlelighthouse.core.scoring.HealthGrade
+import java.util.Locale
+
+/**
+ * Cross-platform console logger that safely handles emoji and Unicode output.
+ * Supports colorful box-drawing for screenshot-worthy terminal dashboards.
+ */
+object ConsoleLogger {
+
+    private val supportsUnicode: Boolean by lazy {
+        val isWindowsTerminal = System.getenv("WT_SESSION") != null
+        val isVsCodeTerminal = System.getenv("TERM_PROGRAM") == "vscode"
+        val isUnixLike = System.getProperty("os.name")?.lowercase(Locale.ROOT)?.let { osName ->
+            osName.contains("mac") || osName.contains("linux") || osName.contains("nix")
+        } ?: false
+        // Check both LANG and LC_ALL — either being UTF-8 is sufficient
+        val hasUtf8Locale = listOf(System.getenv("LANG"), System.getenv("LC_ALL"), System.getenv("LC_CTYPE"))
+            .any { it?.contains("UTF-8", ignoreCase = true) == true || it?.contains("utf8", ignoreCase = true) == true }
+        val hasCiUtf8 = System.getenv("CI") != null && hasUtf8Locale
+        isWindowsTerminal || isVsCodeTerminal || isUnixLike || hasCiUtf8
+    }
+
+    // ANSI color codes
+    private const val RESET = "\u001B[0m"
+    private const val BOLD = "\u001B[1m"
+    private const val DIM = "\u001B[2m"
+    private const val RED = "\u001B[31m"
+    private const val GREEN = "\u001B[32m"
+    private const val YELLOW = "\u001B[33m"
+    private const val BLUE = "\u001B[34m"
+    private const val CYAN = "\u001B[36m"
+    private const val WHITE = "\u001B[37m"
+    private const val BG_RED = "\u001B[41m"
+    private const val BG_GREEN = "\u001B[42m"
+    private const val BG_YELLOW = "\u001B[43m"
+    private const val BG_BLUE = "\u001B[44m"
+
+    fun info(emoji: String, fallback: String, message: String) {
+        println("${prefix(emoji, fallback)} $message")
+    }
+
+    fun success(message: String) { info("✅", "[OK]", message) }
+    fun warn(message: String) { info("⚠️", "[WARN]", message) }
+    fun error(message: String) { info("🛑", "[ERROR]", message) }
+
+    fun section(emoji: String, fallback: String, title: String) {
+        println("")
+        println("${BOLD}${CYAN}${"═".repeat(60)}${RESET}")
+        println("${BOLD}${prefix(emoji, fallback)} $title${RESET}")
+        println("${BOLD}${CYAN}${"═".repeat(60)}${RESET}")
+    }
+
+    fun auditorStart(auditorName: String, emoji: String, fallback: String, action: String) {
+        info(emoji, fallback, "${DIM}[$auditorName]${RESET} $action")
+    }
+
+    fun rule() { println("${CYAN}${"═".repeat(60)}${RESET}") }
+
+    /**
+     * Prints the screenshot-worthy terminal dashboard box.
+     */
+    fun printDashboard(
+        moduleName: String,
+        score: Int,
+        previousScore: Int?,
+        rank: HealthScoreEngine.ArchitectRank,
+        fatalCount: Int,
+        errorCount: Int,
+        warningCount: Int,
+        infoCount: Int,
+        topIssues: List<String>,
+        passedChecks: List<String>
+    ) {
+        val width = 58
+        val scoreColor = colorForScore(score.toDouble())
+        val deltaStr = if (previousScore != null) {
+            val d = score - previousScore
+            when {
+                d > 0 -> " ${GREEN}(+${d})${RESET}"
+                d < 0 -> " ${RED}(${d})${RESET}"
+                else -> " (±0)"
+            }
+        } else ""
+
+        val nextRank = HealthScoreEngine.ArchitectRank.entries
+            .filter { it.minScore > score }
+            .minByOrNull { it.minScore }
+
+        val nextRankStr = if (nextRank != null) " → ${nextRank.displayName} 🎯" else " 🏆"
+
+        println("")
+        println("${BOLD}${CYAN}┌${"─".repeat(width)}┐${RESET}")
+        printBoxLine("🏗️  $moduleName", width)
+        printBoxLine("Score: ${scoreColor}${BOLD}$score/100${RESET}$deltaStr  ·  ${rank.emoji} ${rank.displayName}$nextRankStr", width)
+        println("${CYAN}├${"─".repeat(width)}┤${RESET}")
+
+        // Passed checks (max 3)
+        passedChecks.take(3).forEach { check ->
+            printBoxLine("${GREEN}✅ $check${RESET}", width)
+        }
+
+        // Top issues (max 5)
+        topIssues.take(5).forEach { issue ->
+            printBoxLine(issue, width)
+        }
+
+        // Summary line
+        println("${CYAN}├${"─".repeat(width)}┤${RESET}")
+        val totalIssues = fatalCount + errorCount + warningCount + infoCount
+        val summaryParts = mutableListOf<String>()
+        if (fatalCount > 0) summaryParts.add("${RED}${BOLD}${fatalCount} fatal${RESET}")
+        if (errorCount > 0) summaryParts.add("${RED}${errorCount} error${RESET}")
+        if (warningCount > 0) summaryParts.add("${YELLOW}${warningCount} warn${RESET}")
+        if (infoCount > 0) summaryParts.add("${BLUE}${infoCount} info${RESET}")
+
+        if (summaryParts.isEmpty()) {
+            printBoxLine("${GREEN}${BOLD}Perfect score! No issues found.${RESET}", width)
+        } else {
+            printBoxLine("${BOLD}${totalIssues} issues:${RESET} ${summaryParts.joinToString(" · ")}", width)
+        }
+
+        if (nextRank != null && (fatalCount + errorCount) > 0) {
+            printBoxLine("${CYAN}💡 Fix ${fatalCount + errorCount} issues to unlock ${nextRank.displayName}${RESET}", width)
+        }
+
+        println("${BOLD}${CYAN}└${"─".repeat(width)}┘${RESET}")
+        println("")
+    }
+
+    /**
+     * Prints the category health breakdown to the console.
+     */
+    fun printCategoryHealth(categoryScores: List<CategoryScore>) {
+        if (categoryScores.isEmpty()) return
+
+        println("${BOLD}${CYAN}${"═".repeat(60)}${RESET}")
+        println("${BOLD}CATEGORY HEALTH${RESET}")
+        println("${CYAN}${"═".repeat(15)}${RESET}")
+        println("")
+
+        categoryScores.forEach { catScore ->
+            val scoreInt = catScore.score.toInt()
+            val scoreColor = colorForScore(catScore.score)
+            val grade = catScore.grade()
+            val gradeColor = colorForGrade(grade)
+
+            val displayName = catScore.category.displayName.padEnd(18)
+            val scoreStr = "${scoreInt}%".padStart(4)
+            val gradeStr = grade.name.lowercase().replaceFirstChar { it.uppercase() }.padStart(12)
+
+            println("  $displayName $scoreColor${BOLD}$scoreStr${RESET}  $gradeColor$gradeStr${RESET}")
+        }
+
+        println("")
+        val weakest = categoryScores.minByOrNull { it.score }
+        val strongest = categoryScores.maxByOrNull { it.score }
+
+        if (weakest != null) {
+            println("  ${BOLD}Weakest Category:${RESET}")
+            println("  ${weakest.category.displayName} (${weakest.score.toInt()}%)")
+        }
+        if (strongest != null) {
+            println("")
+            println("  ${BOLD}Strongest Category:${RESET}")
+            println("  ${strongest.category.displayName} (${strongest.score.toInt()}%)")
+        }
+
+        println("")
+        println("${BOLD}${CYAN}${"═".repeat(60)}${RESET}")
+        println("")
+    }
+
+    /**
+     * Prints the "Path to 90" (or next rank) improvement roadmap.
+     */
+    fun printImprovements(opportunities: List<com.gradlelighthouse.core.scoring.ImprovementOpportunity>, currentScore: Int) {
+        if (opportunities.isEmpty()) return
+
+        val width = 58
+        section("🎯", "[GOAL]", "Architectural Improvement Roadmap")
+
+        println("${BOLD}Current Score: $currentScore/100${RESET}")
+        println("")
+
+        opportunities.take(5).forEach { opt ->
+            val gain = if (opt.expectedGain >= 1.0) "+${opt.expectedGain.toInt()}" else "+${String.format("%.1f", opt.expectedGain)}"
+            println("  ${GREEN}${BOLD}$gain${RESET}  ${opt.title}")
+        }
+
+        val totalPotential = opportunities.sumOf { it.expectedGain }.toInt()
+        val potentialScore = (currentScore + totalPotential).coerceAtMost(100)
+
+        println("")
+        println("${CYAN}Potential Score:${RESET} ${BOLD}$potentialScore/100${RESET} (if all items are resolved)")
+        println("")
+    }
+
+    private fun colorForScore(score: Double): String = when {
+        score >= 95.0 -> GREEN
+        score >= 80.0 -> GREEN
+        score >= 60.0 -> YELLOW
+        score >= 40.0 -> YELLOW
+        else -> RED
+    }
+
+    private fun colorForGrade(grade: HealthGrade): String = when (grade) {
+        HealthGrade.ELITE -> GREEN
+        HealthGrade.STRONG -> GREEN
+        HealthGrade.MAINTAINED -> YELLOW
+        HealthGrade.AT_RISK -> YELLOW
+        HealthGrade.LEGACY -> RED
+    }
+
+    private fun printBoxLine(content: String, width: Int) {
+        // Strip ANSI codes to calculate visible length
+        val visible = content.replace(Regex("\u001B\\[[;\\d]*m"), "")
+        val padding = (width - 2 - visible.length).coerceAtLeast(0)
+        println("${CYAN}│${RESET} $content${" ".repeat(padding)} ${CYAN}│${RESET}")
+    }
+
+    private fun prefix(emoji: String, fallback: String): String =
+        if (supportsUnicode) emoji else fallback
+}
