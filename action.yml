@@ -44,28 +44,21 @@ runs:
       shell: bash
       env:
         TERM: xterm-256color
-        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
-        GRADLE_ARGS: ${{ inputs.gradle-args }}
+        INPUT_FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        INPUT_GRADLE_ARGS: ${{ inputs.gradle-args }}
       run: |
-        # Validate FAIL_ON_SEVERITY against the allowed set to prevent injection
-        case "$FAIL_ON_SEVERITY" in
-          NONE|INFO|WARNING|ERROR|FATAL) ;;
-          *) echo "Invalid fail-on-severity value: '$FAIL_ON_SEVERITY'. Must be one of: NONE, INFO, WARNING, ERROR, FATAL" >&2; exit 1 ;;
-        esac
-
-        # Tokenize GRADLE_ARGS with xargs so quoted sub-commands are handled correctly
-        gradle_args_array=()
-        if [ -n "$GRADLE_ARGS" ]; then
-          while IFS= read -r -d '' t; do gradle_args_array+=("$t"); done \
-            < <(printf '%s' "$GRADLE_ARGS" | xargs printf '%s\0')
+        extra_args=()
+        if [ -n "$INPUT_GRADLE_ARGS" ]; then
+          while IFS= read -r -d '' t; do extra_args+=("$t"); done \
+            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs printf '%s\0')
         fi
         ./gradlew lighthouseAudit lighthouseAggregate \
-          "-Plighthouse.failOnSeverity=$FAIL_ON_SEVERITY" \
-          "${gradle_args_array[@]}" \
+          "-Plighthouse.failOnSeverity=$INPUT_FAIL_ON_SEVERITY" \
+          "${extra_args[@]}" \
           --no-daemon --stacktrace
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true' && always()
-      uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+      uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
       with:
         sarif_file: build/reports/lighthouse/
         category: gradle-lighthouse
@@ -75,17 +68,14 @@ runs:
       id: reports
       run: |
         REPORT_FILES=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
-        # Sanitize: strip newlines/carriage-returns before writing to GITHUB_OUTPUT
-        safe_report_files=$(printf '%s' "$REPORT_FILES" | tr -d '\n\r')
-        echo "sarif_files=$safe_report_files" >> "$GITHUB_OUTPUT"
+        echo "sarif_files=$REPORT_FILES" >> $GITHUB_OUTPUT
 
         # Extract score from root module report
         SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
-        safe_score=$(printf '%s' "$SCORE" | tr -d '\n\r')
-        echo "score=$safe_score" >> "$GITHUB_OUTPUT"
+        echo "score=$SCORE" >> $GITHUB_OUTPUT
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
-      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      uses: chainguard-actions/actions-github-script@59cd9717974bea467a79587570a7ca4501543bb6 # v9
       env:
         LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
