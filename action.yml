@@ -75,7 +75,7 @@ runs:
         echo "score=$SCORE" >> $GITHUB_OUTPUT
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
-      uses: chainguard-actions/actions-github-script@59cd9717974bea467a79587570a7ca4501543bb6 # v9
+      uses: chainguard-actions/actions-github-script@90ea3578c9f973abcd1e50255ba3c1cd19216b51 # v9
       env:
         LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
