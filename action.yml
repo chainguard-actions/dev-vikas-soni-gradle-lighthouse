@@ -58,7 +58,7 @@ runs:
           --no-daemon --stacktrace
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true' && always()
-      uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+      uses: chainguard-actions/github-codeql-action/upload-sarif@d8c1fe8e4e11b49fd288625d460f0e03a949312f # v4
       with:
         sarif_file: build/reports/lighthouse/
         category: gradle-lighthouse
@@ -76,5 +76,7 @@ runs:
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
       uses: chainguard-actions/actions-github-script@90ea3578c9f973abcd1e50255ba3c1cd19216b51 # v9
+      env:
+        LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
-        script: "const score = '${{ steps.reports.outputs.score }}';\nconst body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n| Metric | Value |\n|--------|-------|\n| **Health Score** | ${score}/100 |\n| **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n> Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n> SARIF results uploaded to the Security tab.`;\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"
+        script: "const score = process.env.LIGHTHOUSE_SCORE;\nconst body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n| Metric | Value |\n|--------|-------|\n| **Health Score** | ${score}/100 |\n| **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n> Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n> SARIF results uploaded to the Security tab.`;\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"
