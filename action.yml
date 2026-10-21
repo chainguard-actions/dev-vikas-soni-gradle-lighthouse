@@ -3,6 +3,7 @@ description: 'Run Gradle Lighthouse audit and post results as PR comments + SARI
 branding:
   icon: 'zap'
   color: 'orange'
+
 inputs:
   gradle-args:
     description: 'Additional Gradle arguments'
@@ -20,6 +21,7 @@ inputs:
     description: 'Post score summary as PR comment'
     required: false
     default: 'true'
+
 runs:
   using: 'composite'
   steps:
@@ -42,26 +44,29 @@ runs:
           "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
     - name: Run Lighthouse Audit
       shell: bash
-      env:
-        TERM: xterm-256color
-        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
-        GRADLE_ARGS: ${{ inputs.gradle-args }}
       run: |
-        extra_args=()
-        if [ -n "$GRADLE_ARGS" ]; then
-          while IFS= read -r -d '' t; do extra_args+=("$t"); done \
-            < <(printf '%s' "$GRADLE_ARGS" | xargs -r printf '%s\0')
+        args=()
+        if [ -n "$INPUT_GRADLE_ARGS" ]; then
+          printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r true   # fails on an unmatched quote
+          while IFS= read -r -d '' t; do args+=("$t"); done \
+            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r printf '%s\0')
         fi
         ./gradlew lighthouseAudit lighthouseAggregate \
-          "-Plighthouse.failOnSeverity=$FAIL_ON_SEVERITY" \
-          "${extra_args[@]}" \
+          "-Plighthouse.failOnSeverity=$INPUT_FAIL_ON_SEVERITY" \
+          ${args[@]+"${args[@]}"} \
           --no-daemon --stacktrace
+      env:
+        TERM: xterm-256color
+        INPUT_GRADLE_ARGS: ${{ inputs.gradle-args }}
+        INPUT_FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true' && always()
-      uses: chainguard-actions/github-codeql-action/upload-sarif@af9a71138d91d5fb30bfcfc73aff470163092543 # v4
+      uses: chainguard-actions/github-codeql-action/upload-sarif@fb4cd6516f031c131efd4b91cb7a4ab5975a11ae # v4
       with:
         sarif_file: build/reports/lighthouse/
         category: gradle-lighthouse
+
     - name: Find SARIF reports
       if: always()
       shell: bash
@@ -73,10 +78,46 @@ runs:
         # Extract score from root module report
         SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
         echo "score=$SCORE" >> $GITHUB_OUTPUT
+
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
       uses: chainguard-actions/actions-github-script@90ea3578c9f973abcd1e50255ba3c1cd19216b51 # v9
       env:
-        SCORE: ${{ steps.reports.outputs.score }}
+        LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
-        script: "const score = process.env.SCORE;\nconst body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n| Metric | Value |\n|--------|-------|\n| **Health Score** | ${score}/100 |\n| **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n> Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n> SARIF results uploaded to the Security tab.`;\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"
+        script: |
+          const score = process.env.LIGHTHOUSE_SCORE || '';
+          const body = `## 🏗️ Gradle Lighthouse Report
+
+          | Metric | Value |
+          |--------|-------|
+          | **Health Score** | ${score}/100 |
+          | **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |
+
+          > Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).
+          > SARIF results uploaded to the Security tab.`;
+
+          // Find existing comment
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          const existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+          }
+
