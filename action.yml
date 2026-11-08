@@ -47,22 +47,22 @@ runs:
       run: |
         args=()
         if [ -n "$INPUT_GRADLE_ARGS" ]; then
-          printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r true   # fails on an unmatched quote
+          printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r true >/dev/null   # fails on an unmatched quote
           while IFS= read -r -d '' t; do args+=("$t"); done \
-            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r printf '%s\0')
+            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
         fi
         ./gradlew lighthouseAudit lighthouseAggregate \
           "-Plighthouse.failOnSeverity=$INPUT_FAIL_ON_SEVERITY" \
-          ${args[@]+"${args[@]}"} \
+          "${args[@]}" \
           --no-daemon --stacktrace
       env:
         TERM: xterm-256color
-        INPUT_GRADLE_ARGS: ${{ inputs.gradle-args }}
         INPUT_FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        INPUT_GRADLE_ARGS: ${{ inputs.gradle-args }}
 
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true' && always()
-      uses: chainguard-actions/github-codeql-action/upload-sarif@fb4cd6516f031c131efd4b91cb7a4ab5975a11ae # v4
+      uses: chainguard-actions/github-codeql-action/upload-sarif@e4969b640f7a67163769dc6d910d19032366881b # v4
       with:
         sarif_file: build/reports/lighthouse/
         category: gradle-lighthouse
@@ -81,7 +81,7 @@ runs:
 
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
-      uses: chainguard-actions/actions-github-script@90ea3578c9f973abcd1e50255ba3c1cd19216b51 # v9
+      uses: chainguard-actions/actions-github-script@5ae8e66bc55d3cfc641b4dd912088e3996b815c2 # v9
       env:
         LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
