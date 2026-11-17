@@ -73,11 +73,12 @@ runs:
       id: reports
       run: |
         REPORT_FILES=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
-        echo "sarif_files=$REPORT_FILES" >> $GITHUB_OUTPUT
+        EOF="EOF_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+        { echo "sarif_files<<$EOF"; echo "$REPORT_FILES"; echo "$EOF"; } >> "$GITHUB_OUTPUT"
 
         # Extract score from root module report
         SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
-        echo "score=$SCORE" >> $GITHUB_OUTPUT
+        echo "score=$SCORE" >> "$GITHUB_OUTPUT"
 
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
