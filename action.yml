@@ -3,6 +3,7 @@ description: 'Run Gradle Lighthouse audit and post results as PR comments + SARI
 branding:
   icon: 'zap'
   color: 'orange'
+
 inputs:
   gradle-args:
     description: 'Additional Gradle arguments'
@@ -24,6 +25,7 @@ inputs:
     description: 'Path to base reports for delta calculation (optional)'
     required: false
     default: '.lighthouse/base-reports'
+
 runs:
   using: 'composite'
   steps:
@@ -47,6 +49,8 @@ runs:
     - name: Download Base Reports (Main Branch)
       if: github.event_name == 'pull_request'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      env:
+        INPUT_BASE_REPORT_PATH: ${{ inputs.base-report-path }}
       with:
         script: |
           try {
@@ -74,15 +78,16 @@ runs:
                   archive_format: 'zip'
                 });
                 const fs = require('fs');
-                fs.writeFileSync('${{ github.workspace }}/base-reports.zip', Buffer.from(download.data));
-                const exec = require('@actions/exec');
-                await exec.exec('unzip', ['-o', '${{ github.workspace }}/base-reports.zip', '-d', '${{ inputs.base-report-path }}']);
+                const zipPath = process.env.GITHUB_WORKSPACE + '/base-reports.zip';
+                fs.writeFileSync(zipPath, Buffer.from(download.data));
+                await exec.exec('unzip', ['-o', zipPath, '-d', process.env.INPUT_BASE_REPORT_PATH]);
                 console.log('Successfully downloaded base reports from run ' + runId);
               }
             }
           } catch (e) {
             console.log('Could not download base reports: ' + e.message);
           }
+
     - name: Run Lighthouse Audit
       shell: bash
       env:
@@ -93,33 +98,84 @@ runs:
       run: |
         gradle_extra_args=()
         if [ -n "$INPUT_GRADLE_ARGS" ]; then
+          printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r true >/dev/null
           while IFS= read -r -d '' t; do gradle_extra_args+=("$t"); done \
-            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs printf '%s\0')
+            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
         fi
         ./gradlew lighthouseAudit lighthouseAggregate \
           "-Plighthouse.failOnSeverity=$INPUT_FAIL_ON_SEVERITY" \
           "-Plighthouse.baseReportDir=$INPUT_BASE_REPORT_PATH" \
           "${gradle_extra_args[@]}" \
           --no-daemon --stacktrace
+
     - name: Upload SARIF
       if: inputs.upload-sarif == 'true' && always()
       uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
       with:
         sarif_file: build/reports/lighthouse/
         category: gradle-lighthouse
+
     - name: Find SARIF reports
       if: always()
       shell: bash
       id: reports
       run: |
         REPORT_FILES=$(find . -path '*/reports/lighthouse/*-report.sarif' | head -20)
-        echo "sarif_files=$REPORT_FILES" >> $GITHUB_OUTPUT
+        EOF_DELIM="EOF_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+        { echo "sarif_files<<$EOF_DELIM"; echo "$REPORT_FILES"; echo "$EOF_DELIM"; } >> "$GITHUB_OUTPUT"
 
         # Extract score from root module report
         SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
-        echo "score=$SCORE" >> $GITHUB_OUTPUT
+        SAFE_SCORE=$(printf '%s' "$SCORE" | tr -d '\n\r')
+        echo "score=$SAFE_SCORE" >> "$GITHUB_OUTPUT"
+
     - name: PR Comment
       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      env:
+        LIGHTHOUSE_SCORE: ${{ steps.reports.outputs.score }}
       with:
-        script: "const fs = require('fs');\nconst summaryPath = 'build/reports/lighthouse/lighthouse-pr-summary.md';\nlet body = '';\n\nif (fs.existsSync(summaryPath)) {\n  body = fs.readFileSync(summaryPath, 'utf8');\n} else {\n  const score = '${{ steps.reports.outputs.score }}';\n  body = `## \U0001F3D7️ Gradle Lighthouse Report\n\n  | Metric | Value |\n  |--------|-------|\n  | **Health Score** | ${score}/100 |\n  | **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |\n\n  > Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).\n  > SARIF results uploaded to the Security tab.`;\n}\n\n// Find existing comment\nconst { data: comments } = await github.rest.issues.listComments({\n  owner: context.repo.owner,\n  repo: context.repo.repo,\n  issue_number: context.issue.number,\n});\nconst existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));\n\nif (existing) {\n  await github.rest.issues.updateComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    comment_id: existing.id,\n    body: body\n  });\n} else {\n  await github.rest.issues.createComment({\n    owner: context.repo.owner,\n    repo: context.repo.repo,\n    issue_number: context.issue.number,\n    body: body\n  });\n}\n"
+        script: |
+          const fs = require('fs');
+          const summaryPath = 'build/reports/lighthouse/lighthouse-pr-summary.md';
+          let body = '';
+
+          if (fs.existsSync(summaryPath)) {
+            body = fs.readFileSync(summaryPath, 'utf8');
+          } else {
+            const score = process.env.LIGHTHOUSE_SCORE || '';
+            body = `## 🏗️ Gradle Lighthouse Report
+
+            | Metric | Value |
+            |--------|-------|
+            | **Health Score** | ${score}/100 |
+            | **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |
+
+            > Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).
+            > SARIF results uploaded to the Security tab.`;
+          }
+
+          // Find existing comment
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          const existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body: body
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+          }
+

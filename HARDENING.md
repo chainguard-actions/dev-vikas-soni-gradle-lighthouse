@@ -4,61 +4,35 @@
 
 > This file was generated automatically by the hardening agent.
 
-**Policy SHA:** `d636be7e43ef829af6e853da6b3c7566db9f72fe`
+**Policy SHA:** `374911c4be584df24e6da57af2d990570ef0f859`
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
 **Harden Agent Version:** `2`
 
-Action **dev-vikas-soni--gradle-lighthouse/v2.3.2** was hardened automatically. 7 finding(s) were identified and resolved across 1 iteration(s).
+Action **dev-vikas-soni--gradle-lighthouse/v2.3.2** was hardened automatically. 6 finding(s) were identified and resolved across 2 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-The 'Run Lighthouse Audit' run: block directly interpolates user-controlled inputs into the shell command string without routing them through env: variables first. Specifically, ${{ inputs.fail-on-severity }}, ${{ inputs.base-report-path }}, and ${{ inputs.gradle-args }} are embedded directly in the bash script, allowing an attacker who controls these inputs to inject arbitrary shell commands. Sub-rule (a): direct expression interpolation in run: block.
+Rule (a): the 'Run Lighthouse Audit' step puts GitHub expressions straight into its run: script: `-Plighthouse.failOnSeverity=${{ inputs.fail-on-severity }}`, `-Plighthouse.baseReportDir=${{ inputs.base-report-path }}` and `${{ inputs.gradle-args }}`. These values are substituted into the bash script before it runs, so shell metacharacters in any input (for example `; curl ... `) would run as commands. Fix: move each input into the step's env: block and expand it double-quoted, e.g. "$FAIL_ON_SEVERITY".
 
 Locations:
 
-- `action.yml:72`
+- `action.yml:76`
+- `action.yml:77`
+- `action.yml:78`
 
 ### unpinned-uses (severity: high)
 
-Multiple uses: references are pinned to mutable tags or version strings rather than immutable 40-character SHA digests, making the action vulnerable to supply-chain attacks if those tags are moved. Failing references in action.yml: actions/github-script@v9 (line ~28), github/codeql-action/upload-sarif@v4.37.3 (line ~83), actions/github-script@v9 (line ~97). Failing references in lighthouse-ci.yml: actions/checkout@v7, actions/setup-java@v5.6.0, gradle/actions/setup-gradle@v6 (multiple). Failing references in publish-plugin.yml: actions/checkout@v7, actions/setup-java@v5.6.0, gradle/actions/wrapper-validation@v6, gradle/actions/setup-gradle@v6. Failing references in qodana_code_quality.yml: actions/checkout@v4, JetBrains/qodana-action@v2026.1.
+These composite steps reference actions by mutable tags, not full 40-char commit SHAs: `uses: actions/github-script@v9` (line 34), `uses: github/codeql-action/upload-sarif@v4.37.3` (line 85), `uses: actions/github-script@v9` (line 104).
 
 Locations:
 
-- `action.yml:28`
-- `action.yml:83`
-- `action.yml:97`
-- `.github/workflows/lighthouse-ci.yml:13`
-- `.github/workflows/lighthouse-ci.yml:16`
-- `.github/workflows/lighthouse-ci.yml:20`
-- `.github/workflows/lighthouse-ci.yml:31`
-- `.github/workflows/lighthouse-ci.yml:34`
-- `.github/workflows/lighthouse-ci.yml:38`
-- `.github/workflows/publish-plugin.yml:11`
-- `.github/workflows/publish-plugin.yml:14`
-- `.github/workflows/publish-plugin.yml:20`
-- `.github/workflows/publish-plugin.yml:23`
-- `.github/workflows/qodana_code_quality.yml:19`
-- `.github/workflows/qodana_code_quality.yml:22`
-
-### missing-permissions (severity: medium)
-
-The workflow file lighthouse-ci.yml has no top-level permissions: key and neither the 'build' nor 'publish' jobs define job-level permissions. This means the GITHUB_TOKEN is granted its default (broad) permissions for all jobs in the workflow.
-
-Locations:
-
-- `.github/workflows/lighthouse-ci.yml:1`
-
-### missing-permissions (severity: medium)
-
-The workflow file publish-plugin.yml has no top-level permissions: key and the 'publish' job has no job-level permissions block. This means the GITHUB_TOKEN is granted its default (broad) permissions.
-
-Locations:
-
-- `.github/workflows/publish-plugin.yml:1`
+- `action.yml:34`
+- `action.yml:85`
+- `action.yml:104`
 
 ### static-inline-injection (severity: high)
 
@@ -84,27 +58,138 @@ Locations:
 
 - `action.yml:78`
 
+### prior-fix (severity: high)
+
+Carried forward from this version's previous harden, which fixed it; fix it again unless the code no longer has the problem. The previous harden changed action.yml without recording a finding for it, and this analysis reported nothing there. Re-apply its security changes unless the code no longer needs them. The previous patch:
+```diff
+diff --git a/action.yml b/action.yml
+index c2397e7..882816c 100644
+--- a/action.yml
++++ b/action.yml
+@@ -3,7 +3,6 @@ description: 'Run Gradle Lighthouse audit and post results as PR comments + SARI
+ branding:
+   icon: 'zap'
+   color: 'orange'
+-
+ inputs:
+   gradle-args:
+     description: 'Additional Gradle arguments'
+@@ -25,13 +24,29 @@ inputs:
+     description: 'Path to base reports for delta calculation (optional)'
+     required: false
+     default: '.lighthouse/base-reports'
+-
+ runs:
+   using: 'composite'
+   steps:
+     - name: Download Base Reports (Main Branch)
+       if: github.event_name == 'pull_request'
+-      uses: actions/github-script@v9
++      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+       with:
+         script: |
+           try {
+@@ -68,25 +83,30 @@ runs:
+           } catch (e) {
+             console.log('Could not download base reports: ' + e.message);
+           }
+-
+     - name: Run Lighthouse Audit
+       shell: bash
++      env:
++        TERM: xterm-256color
++        INPUT_FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
++        INPUT_BASE_REPORT_PATH: ${{ inputs.base-report-path }}
++        INPUT_GRADLE_ARGS: ${{ inputs.gradle-args }}
+       run: |
++        gradle_extra_args=()
++        if [ -n "$INPUT_GRADLE_ARGS" ]; then
++          while IFS= read -r -d '' t; do gradle_extra_args+=("$t"); done \
++            < <(printf '%s' "$INPUT_GRADLE_ARGS" | xargs printf '%s\0')
++        fi
+         ./gradlew lighthouseAudit lighthouseAggregate \
+-          -Plighthouse.failOnSeverity=${{ inputs.fail-on-severity }} \
+-          -Plighthouse.baseReportDir=${{ inputs.base-report-path }} \
+-          ${{ inputs.gradle-args }} \
++          "-Plighthouse.failOnSeverity=$INPUT_FAIL_ON_SEVERITY" \
++          "-Plighthouse.baseReportDir=$INPUT_BASE_REPORT_PATH" \
++          "${gradle_extra_args[@]}" \
+           --no-daemon --stacktrace
+-      env:
+-        TERM: xterm-256color
+-
+     - name: Upload SARIF
+       if: inputs.upload-sarif == 'true' && always()
+-      uses: github/codeql-action/upload-sarif@v4.37.3
++      uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+       with:
+         sarif_file: build/reports/lighthouse/
+         category: gradle-lighthouse
+-
+     - name: Find SARIF reports
+       if: always()
+       shell: bash
+@@ -98,52 +118,8 @@ runs:
+         # Extract score from root module report
+         SCORE=$(grep -o '"score": [0-9]*' build/reports/lighthouse/module-report.json 2>/dev/null | head -1 | grep -o '[0-9]*' || echo "N/A")
+         echo "score=$SCORE" >> $GITHUB_OUTPUT
+-
+     - name: PR Comment
+       if: inputs.comment-on-pr == 'true' && github.event_name == 'pull_request' && always()
+-      uses: actions/github-script@v9
++      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+       with:
+-        script: |
+-          const fs = require('fs');
+-          const summaryPath = 'build/reports/lighthouse/lighthouse-pr-summary.md';
+-          let body = '';
+-
+-          if (fs.existsSync(summaryPath)) {
+-            body = fs.readFileSync(summaryPath, 'utf8');
+-          } else {
+-            const score = '${{ steps.reports.outputs.score }}';
+-            body = `## 🏗️ Gradle Lighthouse Report
+-
+-            | Metric | Value |
+-            |--------|-------|
+-            | **Health Score** | ${score}/100 |
+-            | **Status** | ${parseInt(score) >= 70 ? '✅ Passing' : '⚠️ Needs attention'} |
+-
+-            > Full report available in the [Actions artifacts](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).
+-            > SARIF results uploaded to the Security tab.`;
+-          }
+-
+-          // Find existing comment
+-          const { data: comments } = await github.rest.issues.listComments({
+-            owner: context.repo.owner,
+-            repo: context.repo.repo,
+-            issue_number: context.issue.number,
+-          });
+-          const existing = comments.find(c => c.body.includes('Gradle Lighthouse Report'));
+-
+-          if (e
+... (truncated)
+```
+
+Locations:
+
+- `action.yml`
+
 ## Iteration Notes
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, static-inline-injection, unpinned-uses, missing-permissions
+**Fixes applied:** script-injection, unpinned-uses, static-inline-injection, prior-fix
 
 **Notes:**
 
-Fixed all findings across action.yml and three workflow files:
+Pinned actions/github-script@v9 (3a2844b7…) and github/codeql-action/upload-sarif@v4.37.3 (e4fba868…). Moved fail-on-severity, base-report-path and gradle-args into the env: of the 'Run Lighthouse Audit' step. The first two are now passed double-quoted. gradle-args used to be pasted straight into the script, so the shell honoured quotes in it; it is now split the same quote-aware way (xargs with an unmatched-quote check, -r, the built-in printf via sh -c) into an array before going to Gradle. Re-applied the earlier security changes to the github-script steps as well: github.workspace, inputs.base-report-path and steps.reports.outputs.score are now read through process.env and env:, not pasted into the JS. Not tested by running the action. One extra change: in the base-report download step I took out upstream's `require('@actions/exec')` and used the `exec` that github-script already provides.
 
-1. script-injection/static-inline-injection (action.yml): Moved ${{ inputs.fail-on-severity }}, ${{ inputs.base-report-path }}, and ${{ inputs.gradle-args }} from the run: block into the step's env: map. gradle-args (a list input) is tokenized with xargs into a bash array to preserve argument boundaries.
+### Iteration 2
 
-2. unpinned-uses (action.yml): Pinned actions/github-script@v9 (×2) and github/codeql-action/upload-sarif@v4.37.3 to full commit SHAs.
+**Fixes applied:** github-env-injection
 
-3. unpinned-uses (lighthouse-ci.yml): Pinned actions/checkout@v7, actions/setup-java@v5.6.0, and gradle/actions/setup-gradle@v6 (×2 each) to full commit SHAs.
+**Notes:**
 
-4. unpinned-uses (publish-plugin.yml): Pinned actions/checkout@v7, actions/setup-java@v5.6.0, gradle/actions/wrapper-validation@v6, and gradle/actions/setup-gradle@v6 to full commit SHAs.
-
-5. unpinned-uses (qodana_code_quality.yml): Pinned actions/checkout@v4 and JetBrains/qodana-action@v2026.1 to full commit SHAs.
-
-6. missing-permissions (lighthouse-ci.yml): Added top-level permissions: contents: read and per-job permissions: contents: read to both build and publish jobs.
-
-7. missing-permissions (publish-plugin.yml): Added top-level permissions: contents: read and job-level permissions: contents: read to the publish job.
+In the 'Find SARIF reports' step of action.yml, sarif_files is now written as a multi-line value between heredoc delimiters. The delimiter is generated fresh from /dev/urandom on each run, so the list of paths keeps its line breaks and a path containing a newline can't add other outputs. The score value now has newlines stripped before it is written, and $GITHUB_OUTPUT is quoted. Nothing was run to test this.
 
